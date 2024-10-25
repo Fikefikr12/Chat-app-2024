@@ -1,71 +1,129 @@
-import 'package:chatapp1/model/message.dart';
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 
 class ChatService {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseStorage _storage = FirebaseStorage.instance;
 
-  // Get user stream
-  Stream<List<Map<String, dynamic>>> getUsersStream() {
-    return _firestore.collection("users").snapshots().map((snapshot) {
-      return snapshot.docs.map((doc) {
-        final user = doc.data();
-        return user;
-      }).toList();
+  // Get current user
+  User? getCurrentUser() {
+    return _auth.currentUser;
+  }
+
+  // Stream messages between two users
+  Stream<QuerySnapshot> getMessagesStream(String userId) {
+    final currentUserId = _auth.currentUser?.uid;
+    List<String> userIds = [currentUserId!, userId];
+    userIds.sort();
+    String chatRoomId = userIds.join('_');
+
+    return _firestore
+        .collection('chat_rooms')
+        .doc(chatRoomId)
+        .collection('messages')
+        .orderBy('timeStamp', descending: true)
+        .snapshots();
+  }
+
+  // Send a text message
+  Future<void> sendMessage(String userId, String message) async {
+    final currentUserId = _auth.currentUser?.uid;
+    List<String> userIds = [currentUserId!, userId];
+    userIds.sort();
+    String chatRoomId = userIds.join('_');
+
+    await _firestore
+        .collection('chat_rooms')
+        .doc(chatRoomId)
+        .collection('messages')
+        .add({
+      'senderId': currentUserId,
+      'message': message,
+      'timeStamp': Timestamp.now(),
+      'imageUrl': '',
     });
   }
 
-  // Send message and create chat room if necessary
-  Future<void> sendMessage(String receiverID, String message) async {
-    // Get current user info
-    final String currentUserID = _auth.currentUser!.uid;
-    final String currentUserEmail = _auth.currentUser!.email!;
-    final Timestamp timestamp = Timestamp.now();
+  // Send an image message
+  Future<void> sendImage(String userId, File imageFile) async {
+    final currentUserId = _auth.currentUser?.uid;
+    List<String> userIds = [currentUserId!, userId];
+    userIds.sort();
+    String chatRoomId = userIds.join('_');
 
-    // Create a new message object
-    Message newMessage = Message(
-      senderId: currentUserID,        // Ensure senderId is added here
-      senderEmail: currentUserEmail,
-      receiverId: receiverID,
-      message: message,
-      timeStamp: timestamp,
-    );
+    String fileName =
+        '${DateTime.now().millisecondsSinceEpoch}_${imageFile.path.split('/').last}';
+    final uploadTask = await _storage
+        .ref('chat_images/$fileName')
+        .putFile(imageFile);
 
-    // Construct chat room ID for the two users
-    List<String> ids = [currentUserID, receiverID];
-    ids.sort();
-    String chatRoomID = ids.join('_');
+    final imageUrl = await uploadTask.ref.getDownloadURL();
 
-    // Create or update the chat room document with metadata
-    await _firestore.collection("chat_rooms").doc(chatRoomID).set({
-      'receiverId': receiverID,            // Store receiver ID
-      'lastMessage': message,              // Store the latest message
-      'lastMessageTime': timestamp,        // Timestamp of the latest message
-      'lastMessageSender': currentUserEmail,  // Sender's email of the latest message
-    }, SetOptions(merge: true)); // Merge to ensure no overwriting
-
-    // Add the new message to the messages sub-collection with senderId
     await _firestore
-        .collection("chat_rooms")
-        .doc(chatRoomID)
-        .collection("messages")
-        .add(newMessage.toMap());   // Use toMap to ensure all fields are saved
+        .collection('chat_rooms')
+        .doc(chatRoomId)
+        .collection('messages')
+        .add({
+      'senderId': currentUserId,
+      'imageUrl': imageUrl,
+      'timeStamp': Timestamp.now(),
+      'message': '',
+    });
   }
 
-  // Get messages from Firestore
-  Stream<QuerySnapshot> getMessages(String userID, String otherUserID) {
-    // Construct a chatroom ID for the two users
-    List<String> ids = [userID, otherUserID];
-    ids.sort();
-    String chatRoomID = ids.join('_');
+  // Update a message
+  Future<void> updateMessage(
+      String userId, String messageId, String newMessage) async {
+    final currentUserId = _auth.currentUser?.uid;
+    List<String> userIds = [currentUserId!, userId];
+    userIds.sort();
+    String chatRoomId = userIds.join('_');
 
-    // Return messages ordered by timestamp
-    return _firestore
-        .collection("chat_rooms")
-        .doc(chatRoomID)
-        .collection("messages")
-        .orderBy("timestamp", descending: false)  // Sort messages in chronological order
-        .snapshots();
+    await _firestore
+        .collection('chat_rooms')
+        .doc(chatRoomId)
+        .collection('messages')
+        .doc(messageId)
+        .update({'message': newMessage});
+  }
+
+  // Delete a single message
+  Future<void> deleteMessage(String userId, String messageId) async {
+    final currentUserId = _auth.currentUser?.uid;
+    List<String> userIds = [currentUserId!, userId];
+    userIds.sort();
+    String chatRoomId = userIds.join('_');
+
+    await _firestore
+        .collection('chat_rooms')
+        .doc(chatRoomId)
+        .collection('messages')
+        .doc(messageId)
+        .delete();
+  }
+
+  // Delete multiple messages
+  Future<void> deleteMultipleMessages(String userId, List<String> messageIds) async {
+    final currentUserId = _auth.currentUser?.uid;
+    List<String> userIds = [currentUserId!, userId];
+    userIds.sort();
+    String chatRoomId = userIds.join('_');
+
+    WriteBatch batch = _firestore.batch();
+
+    for (String messageId in messageIds) {
+      DocumentReference messageRef = _firestore
+          .collection('chat_rooms')
+          .doc(chatRoomId)
+          .collection('messages')
+          .doc(messageId);
+
+      batch.delete(messageRef);
+    }
+
+    await batch.commit();
   }
 }

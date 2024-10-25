@@ -37,9 +37,9 @@ class SettingsPage extends StatelessWidget {
               ],
             ),
 
-
       ),
     );
   }
 }
 
+// settings page.dart
